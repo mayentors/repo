@@ -69,13 +69,20 @@ def get_gmail_service():
     return None
 
 def get_or_create_label(service, label_name):
+    """Fetches or builds system labels without Cloud ID collision mutations."""
     try:
         results = service.users().labels().list(userId="me").execute()
         labels = results.get("labels", [])
+        
         for label in labels:
-            if label["name"].lower() == label_name.lower():
+            if label["name"].strip().lower() == label_name.strip().lower():
                 return label["id"]
-        label_object = {"name": label_name, "labelListVisibility": "labelShow", "messageListVisibility": "show"}
+        
+        label_object = {
+            "name": label_name, 
+            "labelListVisibility": "labelShow", 
+            "messageListVisibility": "show"
+        }
         created_label = service.users().labels().create(userId="me", body=label_object).execute()
         return created_label["id"]
     except Exception:
@@ -260,23 +267,16 @@ if df_contacts is not None:
                             
                             encoded_bytes = base64.urlsafe_b64encode(message.as_bytes()).decode()
                             
-                            # Clean draft creation payload (no labels allowed here)
-                            draft_payload = {
-                                "message": {
-                                    "raw": encoded_bytes
-                                }
+                            active_labels = ["DRAFT"]
+                            if label_id:
+                                active_labels.append(label_id)
+
+                            message_payload = {
+                                "raw": encoded_bytes,
+                                "labelIds": active_labels
                             }
                             
-                            # 1. Create the clean draft
-                            draft = service.users().drafts().create(userId="me", body=draft_payload).execute()
-                            
-                            # 2. Add the custom target label directly to the inner message ID safely
-                            if label_id:
-                                service.users().messages().modify(
-                                    userId="me",
-                                    id=draft["message"]["id"],
-                                    body={"addLabelIds": [label_id]}
-                                ).execute()
+                            service.users().messages().insert(userId="me", body=message_payload).execute()
                                 
                             success_drafts += 1
                             st.write(f"📡 Uploaded draft to your mailbox for: **{to_email}**")
@@ -296,25 +296,22 @@ if df_contacts is not None:
                     needs_approval_id = get_or_create_label(service, TARGET_LABEL_NAME)
                     approved_id = get_or_create_label(service, APPROVED_LABEL_NAME)
 
-                    drafts_response = service.users().drafts().list(userId="me").execute()
-                    current_drafts = drafts_response.get("drafts", [])
+                    messages_response = service.users().messages().list(userId="me", labelIds=[needs_approval_id]).execute()
+                    current_messages = messages_response.get("messages", [])
 
                     approved_count = 0
-                    for d in current_drafts:
+                    for m in current_messages:
                         try:
-                            detail = service.users().drafts().get(userId="me", id=d["id"], format="full").execute()
-                            labels = detail.get("message", {}).get("labelIds", [])
-
-                            if needs_approval_id in labels:
-                                msg_id = detail["message"]["id"]
-                                service.users().messages().modify(
-                                    userId="me", id=msg_id, body={"addLabelIds": [approved_id]}
-                                ).execute()
-                                approved_count += 1
+                            service.users().messages().modify(
+                                userId="me", 
+                                id=m["id"], 
+                                body={"addLabelIds": [approved_id]}
+                            ).execute()
+                            approved_count += 1
                         except Exception:
                             pass
                     status_box.update(label="✔️ Approval Processing Loop Complete!", state="complete")
-                    st.success(f"Approval Complete! Added `{APPROVED_LABEL_NAME}` label.")
+                    st.success(f"Approval Complete! Added `{APPROVED_LABEL_NAME}` label to {approved_count} matching drafts.")
 
     # --- STEP 5 LOGIC: SEND MAILS ---
     if send_clicked:
@@ -324,21 +321,35 @@ if df_contacts is not None:
                 service = get_gmail_service()
                 if service:
                     approved_id = get_or_create_label(service, APPROVED_LABEL_NAME)
-                    drafts_response = service.users().drafts().list(userId="me").execute()
-                    current_drafts = drafts_response.get("drafts", [])
+                    
+                    # Look up messages that have been approved AND are still drafts
+                    messages_response = service.users().messages().list(userId="me", labelIds=[approved_id, "DRAFT"]).execute()
+                    current_messages = messages_response.get("messages", [])
 
                     dispatched_count = 0
-                    for d in current_drafts:
+                    for m in current_messages:
                         try:
-                            detail = service.users().drafts().get(userId="me", id=d["id"], format="full").execute()
-                            labels = detail.get("message", {}).get("labelIds", [])
+                            # 1. Fetch the raw message contents using the messages data stream
+                            msg_details = service.users().messages().get(userId="me", id=m["id"], format="raw").execute()
+                            raw_content = msg_details["raw"]
 
-                            if approved_id in labels:
-                                service.users().drafts().send(userId="me", body={"id": d["id"]}).execute()
-                                dispatched_count += 1
-                        except Exception:
-                            pass
+                            # 2. Transmit the email to the live production network
+                            send_payload = {"raw": raw_content}
+                            service.users().messages().send(userId="me", body=send_payload).execute()
+                            
+                            # 3. CRITICAL ACCESS FIX: Move the tracking draft to the TRASH folder.
+                            # This utilizes the existing 'gmail.modify' scope, avoiding 403 authorization crashes.
+                            service.users().messages().trash(userId="me", id=m["id"]).execute()
+                                
+                            dispatched_count += 1
+                            st.write(f"🚀 Launched email transmission chain for record ID: **{m['id']}**")
+                        except Exception as e:
+                            st.error(f"❌ Dispatch failed for message context {m['id']}: {e}")
+                            
                     status_box.update(label="🚀 Campaign Dispatch Chain Complete!", state="complete")
-                    st.success(f"🎉 Success! {dispatched_count} approved emails have been launched.")
+                    if dispatched_count > 0:
+                        st.success(f"🎉 Success! {dispatched_count} approved emails have been launched into production pipelines.")
+                    else:
+                        st.info("No remaining messages found containing the approval tags ready to send.")
 else:
     st.info("💡 Upload data files and provide body layouts above to unlock execution pipeline triggers.")
