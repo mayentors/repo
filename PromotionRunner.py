@@ -233,7 +233,7 @@ with col1:
 with col2:
     # st.subheader("📝 Step 2: Master Email Content Compositor")
     # --- STEP 2: MASTER EMAIL CONTENT COMPOSITOR ---
-st.subheader("📝 Step 2: Master Email Content Compositor")
+    st.subheader("📝 Step 2: Master Email Content Compositor")
 
 # 1. Initialize session state for the edited template text if it doesn't exist
 if "edited_template_content" not in st.state:
