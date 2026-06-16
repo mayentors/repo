@@ -231,7 +231,32 @@ with col1:
 
 # --- STEP 2: WYSIWYG TINYMCE EMAIL DRAFTER ---
 with col2:
-    st.subheader("📝 Step 2: Master Email Content Compositor")
+    # st.subheader("📝 Step 2: Master Email Content Compositor")
+    # --- STEP 2: MASTER EMAIL CONTENT COMPOSITOR ---
+st.subheader("📝 Step 2: Master Email Content Compositor")
+
+# 1. Initialize session state for the edited template text if it doesn't exist
+if "edited_template_content" not in st.state:
+    # Default back to whatever text was loaded from your file upload in Step 1
+    st.state.edited_template_content = default_template_text 
+
+# 2. Render your rich text editor component 
+# (Replace 'custom_rich_text_editor' with your actual widget function name)
+updated_text = custom_rich_text_editor(
+    value=st.state.edited_template_content, 
+    key="email_editor"
+)
+
+# 3. Add the Save Layout Feature Layout
+col1, col2 = st.columns([3, 1])
+with col2:
+    if st.button("💾 Save Template Changes", type="primary"):
+        # Save the current state of the rich text editor to the session memory
+        st.state.edited_template_content = updated_text
+        st.success("Template modifications saved locally!")
+    
+    
+    
     st.markdown(
         "<small>Modify layout styles, add hyperlinks, or bold elements. Placeholders like <code>{Name}</code> will be preserved.</small>",
         unsafe_allow_html=True,
@@ -304,97 +329,97 @@ if df_contacts is not None:
     pipeline_status = st.container()
 
     # --- STEP 3 LOGIC: GENERATE DRAFTS ---
-    if generate_clicked:
-        with pipeline_status:
-            status_box = st.status("Running Draft Generation Pipeline...", expanded=True)
-            with status_box:
-                st.write("🔄 Compiling contact matrix dataset placeholders...")
-                
-                # Fetch clean, immutable raw template layout string out of memory cache safely
-                master_template_string = str(st.session_state.editor_content)
-                
-                compiled_files = run_compiler_pipeline(df_contacts, master_template_string)
-                st.write(f"✔️ Local letter generation complete. Formatted {len(compiled_files)} letters.")
+if generate_clicked:
+    with pipeline_status:
+        status_box = st.status("Running Draft Generation Pipeline...", expanded=True)
+        with status_box:
+            st.write("🔄 Compiling contact matrix dataset placeholders...")
+            
+            # SUCCESS FIX: Pulling the live, modified text from our compositor's session state 
+            master_template_string = str(st.session_state.edited_template_content)
+            
+            compiled_files = run_compiler_pipeline(df_contacts, master_template_string)
+            st.write(f"✔️ Local letter generation complete. Formatted {len(compiled_files)} letters.")
 
-                st.write("🔄 Connecting to Google Mailbox API Services...")
-                service = get_gmail_service()
-                
-                if not service:
-                    st.error("❌ Google Workspace connection failed. Check your credentials token.")
-                else:
-                    label_id = get_or_create_label(service, TARGET_LABEL_NAME)
-                    success_drafts = 0
+            st.write("🔄 Connecting to Google Mailbox API Services...")
+            service = get_gmail_service()
+            
+            if not service:
+                st.error("❌ Google Workspace connection failed. Check your credentials token.")
+            else:
+                label_id = get_or_create_label(service, TARGET_LABEL_NAME)
+                success_drafts = 0
 
-                    for file_path in compiled_files:
-                        filename = os.path.basename(file_path)
-                        name_email_part = os.path.splitext(filename)[0]
-                        to_email = name_email_part.split("_")[-1] if "_" in name_email_part else ""
-                        
-                        if not to_email or "@" not in to_email:
-                            st.warning(f"⚠️ Skipped file '{filename}': Could not extract valid destination email target.")
-                            continue
+                for file_path in compiled_files:
+                    filename = os.path.basename(file_path)
+                    name_email_part = os.path.splitext(filename)[0]
+                    to_email = name_email_part.split("_")[-1] if "_" in name_email_part else ""
+                    
+                    if not to_email or "@" not in to_email:
+                        st.warning(f"⚠️ Skipped file '{filename}': Could not extract valid destination email target.")
+                        continue
 
-                        with open(file_path, "r", encoding="utf-8") as f:
-                            body_content = f.read()
+                    with open(file_path, "r", encoding="utf-8") as f:
+                        body_content = f.read()
 
-                        # Default backup placeholders
-                        subject = "Exclusive Campaign Update"
-                        html_body = body_content
+                    # Default backup placeholders
+                    subject = "Exclusive Campaign Update"
+                    html_body = body_content
 
-                        # Parse Subject Header out of rich component markup strings cleanly
-                        if "Subject:" in body_content:
-                            try:
-                                parts = body_content.split("Subject:", 1)
-                                after_subject = parts[1]
-                                end_pos = len(after_subject)
-                                
-                                for marker in ["</p>", "<br>", "\n"]:
-                                    if marker in after_subject:
-                                        marker_pos = after_subject.find(marker)
-                                        if marker_pos < end_pos:
-                                            end_pos = marker_pos
-                                            
-                                subject = after_subject[:end_pos].replace("\r", "").replace("\n", "").strip()
-                                if ">" in subject:
-                                    subject = subject.split(">")[-1].strip()
-                                    
-                                html_body = after_subject[end_pos:].strip()
-                                while html_body.startswith(("<br>", "<br />", "</p>", "\n")):
-                                    html_body = html_body.replace("<br>","",1).replace("<br />","",1).replace("</p>","",1).strip()
-                                
-                                if parts[0].strip().endswith("<p>") and not html_body.startswith("<p>"):
-                                    html_body = "<p>" + html_body
-                            except Exception:
-                                html_body = body_content
-
-                        # Execute official structural MIME creation array
+                    # Parse Subject Header out of rich component markup strings cleanly
+                    if "Subject:" in body_content:
                         try:
-                            message = EmailMessage()
-                            message["To"] = to_email
-                            message["Subject"] = subject
-                            message.set_content(html_body, subtype="html")
+                            parts = body_content.split("Subject:", 1)
+                            after_subject = parts[1]
+                            end_pos = len(after_subject)
                             
-                            encoded_bytes = base64.urlsafe_b64encode(message.as_bytes()).decode()
-                            draft_payload = {"message": {"raw": encoded_bytes}}
-                            
-                            # Create Draft Envelope Node
-                            draft = service.users().drafts().create(userId="me", body=draft_payload).execute()
-
-                            # Inject structural user validation approval tags directly onto the message ID element
-                            if label_id:
-                                service.users().messages().modify(
-                                    userId="me",
-                                    id=draft["message"]["id"],
-                                    body={"addLabelIds": [label_id]}
-                                ).execute()
+                            for marker in ["</p>", "<br>", "\n"]:
+                                if marker in after_subject:
+                                    marker_pos = after_subject.find(marker)
+                                    if marker_pos < end_pos:
+                                        end_pos = marker_pos
+                                        
+                            subject = after_subject[:end_pos].replace("\r", "").replace("\n", "").strip()
+                            if ">" in subject:
+                                subject = subject.split(">")[-1].strip()
                                 
-                            success_drafts += 1
-                            st.write(f"📡 Uploaded draft to your mailbox for: **{to_email}**")
-                        except Exception as ex:
-                            st.error(f"❌ API Rejected upload for {to_email}: {ex}")
+                            html_body = after_subject[end_pos:].strip()
+                            while html_body.startswith(("<br>", "<br />", "</p>", "\n")):
+                                html_body = html_body.replace("<br>","",1).replace("<br />","",1).replace("</p>","",1).strip()
+                            
+                            if parts[0].strip().endswith("<p>") and not html_body.startswith("<p>"):
+                                html_body = "<p>" + html_body
+                        except Exception:
+                            html_body = body_content
 
-                    status_box.update(label="🎉 Draft Generation Stage Complete!", state="complete")
-                    st.success(f"Successfully generated and injected {success_drafts} drafts into your Gmail inbox tagged under `{TARGET_LABEL_NAME}`!")
+                    # Execute official structural MIME creation array
+                    try:
+                        message = EmailMessage()
+                        message["To"] = to_email
+                        message["Subject"] = subject
+                        message.set_content(html_body, subtype="html")
+                        
+                        encoded_bytes = base64.urlsafe_b64encode(message.as_bytes()).decode()
+                        draft_payload = {"message": {"raw": encoded_bytes}}
+                        
+                        # Create Draft Envelope Node
+                        draft = service.users().drafts().create(userId="me", body=draft_payload).execute()
+
+                        # Inject structural user validation approval tags directly onto the message ID element
+                        if label_id:
+                            service.users().messages().modify(
+                                userId="me",
+                                id=draft["message"]["id"],
+                                body={"addLabelIds": [label_id]}
+                            ).execute()
+                            
+                        success_drafts += 1
+                        st.write(f"📡 Uploaded draft to your mailbox for: **{to_email}**")
+                    except Exception as ex:
+                        st.error(f"❌ API Rejected upload for {to_email}: {ex}")
+
+                status_box.update(label="🎉 Draft Generation Stage Complete!", state="complete")
+                st.success(f"Successfully generated and injected {success_drafts} drafts into your Gmail inbox tagged under `{TARGET_LABEL_NAME}`!")
 # --- STEP 4 LOGIC: APPROVE DRAFTS ---
     if approve_clicked:
         with pipeline_status:
