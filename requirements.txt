@@ -1,6 +1,9 @@
 pandas
+python-docx
 openpyxl
 google-api-python-client
 google-auth-httplib2
 google-auth-oauthlib
+Flask
 streamlit
+streamlit-tinymce>=0.0.4

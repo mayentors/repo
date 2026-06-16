@@ -5,6 +5,7 @@ import os
 import time
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -34,8 +35,8 @@ if not os.path.exists(OUTPUT_FOLDER):
 # --- INITIALIZE SESSION STATES ---
 if "edited_template_content" not in st.session_state:
     st.session_state.edited_template_content = (
-        "Subject: Global Introduction Update\n\n"
-        "Dear {Name},\n\n"
+        "Subject: Global Introduction Update<br><br>"
+        "Dear {Name},<br><br>"
         "Type your core promotional body structure layout text here..."
     )
 
@@ -77,7 +78,7 @@ def get_or_create_label(service, label_name):
 
 def run_compiler_pipeline(df, html_template):
     for f in os.listdir(OUTPUT_FOLDER):
-        if f.endswith(".html") or f.endswith(".txt"):
+        if f.endswith(".html"):
             os.remove(os.path.join(OUTPUT_FOLDER, f))
 
     generated_files = []
@@ -97,9 +98,9 @@ def run_compiler_pipeline(df, html_template):
             c for c in name_part if c.isalnum() or c in (" ", "_", "-")
         ).rstrip()
         filename = (
-            f"{clean_name}_{email_part}.txt"
+            f"{clean_name}_{email_part}.html"
             if email_part
-            else f"{clean_name}.txt"
+            else f"{clean_name}.html"
         )
         file_path = os.path.join(OUTPUT_FOLDER, filename)
 
@@ -145,39 +146,78 @@ with col1:
                 try:
                     raw_bytes = file.read()
                     template_file_content = raw_bytes.decode("utf-8")
-                    st.session_state.edited_template_content = template_file_content
-                    st.success("✅ Loaded template layout successfully.")
+
+                    if not ("<p>" in template_file_content or "<br>" in template_file_content):
+                        template_file_content = template_file_content.replace("\n", "<br>")
+
+                    # FIXED: Overwrite the correct session state variable explicitly
+                    if st.session_state.edited_template_content != template_file_content:
+                        st.session_state.edited_template_content = template_file_content
+                        st.success("✅ Loaded template layout successfully.")
+                        st.rerun() # FORCE RERUN: Ensures TinyMCE iframe captures the new text immediately
                 except Exception as e:
                     st.error(f"Error reading template file: {e}")
 
-# --- STEP 2: NATIVE INTERACTIVE EMAIL DRAFTER ---
+# --- STEP 2: WYSIWYG TINYMCE EMAIL DRAFTER (RESTORED WITH FULL OPTIONS) ---
 with col2:
     st.subheader("📝 Step 2: Master Email Content Compositor")
     st.markdown(
-        "<small>Modify layouts or copy edits directly into the box. Placeholders like <code>{Name}</code> will be preserved.</small>",
+        "<small>Modify layout styles, add hyperlinks, or bold elements. Placeholders like <code>{Name}</code> will be preserved.</small>",
         unsafe_allow_html=True,
     )
 
-    # Clean native text area binding completely eliminates JS iframe communication lag
-    editor_response = st.text_area(
-        label="Email Editor Context",
-        value=st.session_state.edited_template_content,
-        height=310,
-        label_visibility="collapsed",
-        key="native_text_email_compositor"
-    )
+    # TinyMCE HTML Component String
+    tinymce_html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <script src="https://cdn.jsdelivr.net/npm/tinymce@6/tinymce.min.js" referrerpolicy="origin"></script>
+    </head>
+    <body style="margin:0; padding:0;">
+        <textarea id="editor">{st.session_state.edited_template_content}</textarea>
+        <script>
+            tinymce.init({{
+                selector: '#editor',
+                height: 310,
+                plugins: 'link image lists table code wordcount',
+                toolbar: 'undo redo | blocks | bold italic underline forecolor backcolor | alignleft aligncenter alignright alignjustify | bullist numlist | link image | removeformat',
+                branding: false,
+                promotion: false,
+                setup: function (editor) {{
+                    editor.on('change keyup', function () {{
+                        window.parent.postMessage({{
+                            type: 'streamlit:setComponentValue',
+                            value: editor.getContent()
+                        }}, '*');
+                    }});
+                    editor.on('init', function() {{
+                        window.parent.postMessage({{
+                            type: 'streamlit:setComponentValue',
+                            value: editor.getContent()
+                        }}, '*');
+                    }});
+                }}
+            }});
+        </script>
+    </body>
+    </html>
+    """
 
-    if editor_response != st.session_state.edited_template_content:
-        st.session_state.edited_template_content = editor_response
+    editor_response = components.html(tinymce_html, height=360, scrolling=False)
 
-    # Save control layout
+    # Captures current changes typing into the editor box safely
+    if editor_response and isinstance(editor_response, str) and editor_response.strip() != "":
+        st.session_state.incoming_editor_changes = editor_response
+
+    # Save button row
     save_col1, save_col2 = st.columns([3, 1])
     with save_col2:
         if st.button("💾 Save Template Changes", type="primary", use_container_width=True):
-            st.session_state.edited_template_content = editor_response
-            st.success("Changes committed to memory!")
+            if "incoming_editor_changes" in st.session_state:
+                st.session_state.edited_template_content = st.session_state.incoming_editor_changes
+            st.success("Changes saved successfully to mailbox pipeline memory!")
 
-# Activate layout execution triggers if contacts are present
+# Only activate dashboard pipeline controls if contacts data is uploaded successfully
 if df_contacts is not None:
     st.markdown("---")
 
@@ -204,7 +244,12 @@ if df_contacts is not None:
             with status_box:
                 st.write("🔄 Compiling contact matrix dataset placeholders...")
                 
+                # Check if we have freshly unsaved tracking modifications before executing pipeline
+                if "incoming_editor_changes" in st.session_state:
+                    st.session_state.edited_template_content = st.session_state.incoming_editor_changes
+
                 master_template_string = str(st.session_state.edited_template_content)
+                
                 compiled_files = run_compiler_pipeline(df_contacts, master_template_string)
                 st.write(f"✔️ Local letter generation complete. Formatted {len(compiled_files)} letters.")
 
@@ -232,18 +277,28 @@ if df_contacts is not None:
                         subject = "Exclusive Campaign Update"
                         html_body = body_content
 
-                        # Parse clean structural string blocks
                         if "Subject:" in body_content:
                             try:
                                 parts = body_content.split("Subject:", 1)
                                 after_subject = parts[1]
-                                if "\n" in after_subject:
-                                    subject_line, remaining_body = after_subject.split("\n", 1)
-                                    subject = subject_line.strip()
-                                    html_body = remaining_body.strip()
-                                else:
-                                    subject = after_subject.strip()
-                                    html_body = ""
+                                end_pos = len(after_subject)
+                                
+                                for marker in ["</p>", "<br>", "\n"]:
+                                    if marker in after_subject:
+                                        marker_pos = after_subject.find(marker)
+                                        if marker_pos < end_pos:
+                                            end_pos = marker_pos
+                                            
+                                subject = after_subject[:end_pos].replace("\r", "").replace("\n", "").strip()
+                                if ">" in subject:
+                                    subject = subject.split(">")[-1].strip()
+                                    
+                                html_body = after_subject[end_pos:].strip()
+                                while html_body.startswith(("<br>", "<br />", "</p>", "\n")):
+                                    html_body = html_body.replace("<br>","",1).replace("<br />","",1).replace("</p>","",1).strip()
+                                
+                                if parts[0].strip().endswith("<p>") and not html_body.startswith("<p>"):
+                                    html_body = "<p>" + html_body
                             except Exception:
                                 html_body = body_content
 
@@ -251,8 +306,7 @@ if df_contacts is not None:
                             message = EmailMessage()
                             message["To"] = to_email
                             message["Subject"] = subject
-                            # Use plain text or render inline HTML markup smoothly
-                            message.set_content(html_body) if not ("<" in html_body and ">" in html_body) else message.set_content(html_body, subtype="html")
+                            message.set_content(html_body, subtype="html")
                             
                             encoded_bytes = base64.urlsafe_b64encode(message.as_bytes()).decode()
                             draft_payload = {"message": {"raw": encoded_bytes}}
