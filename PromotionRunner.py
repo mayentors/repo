@@ -10,6 +10,7 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
+from streamlit_tinymce import st_tinymce
 
 # --- API SCOPES & CONSTANTS ---
 SCOPES = [
@@ -201,15 +202,21 @@ with col2:
     </html>
     """
 
-    editor_response = components.html(tinymce_html, height=360, scrolling=False)
-
-    if editor_response and isinstance(editor_response, str) and editor_response.strip() != "":
+editor_response = st_tinymce(
+        content=st.session_state.edited_template_content,
+        key="rich_text_email_compositor",
+        height=360
+    )
+    if editor_response is not None and editor_response != st.session_state.edited_template_content:
         st.session_state.edited_template_content = editor_response
 
     # Save features and feedback layout layout
     save_col1, save_col2 = st.columns([3, 1])
     with save_col2:
         if st.button("💾 Save Template Changes", type="primary", use_container_width=True):
+            # Explicitly force-sync the session state right on click
+            if editor_response:
+                st.session_state.edited_template_content = editor_response
             st.success("Template changes verified and committed to pipeline memory!")
 
 # Only activate dashboard pipeline controls if contacts data is uploaded successfully
