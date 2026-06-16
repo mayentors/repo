@@ -21,7 +21,19 @@ token_info = dict(st.secrets["google_token"])
 
 # 2. Build the credentials object directly from the dictionaries
 # (Instead of passing a string filename like 'token.json')
+# Uncomment the below line when running locally and credential and token is stored locally
+# credentials = Credentials.from_authorized_user_info(token_info) 
+
+
+# 1. Load user authorization tokens directly from Streamlit Dashboard Secrets
+token_info = dict(st.secrets["google_token"])
 credentials = Credentials.from_authorized_user_info(token_info)
+
+# 2. Extract application client configuration directly from Secrets 
+# This bypasses the need for a physical 'credentials.json' file entirely
+client_config = {"web": dict(st.secrets["google_creds"])}
+# =====================================================================
+
 
 # --- API SCOPES & CONSTANTS ---
 SCOPES = [
