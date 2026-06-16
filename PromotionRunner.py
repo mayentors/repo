@@ -5,7 +5,7 @@ import os
 import time
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components
+from streamlit_quill import st_quill
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -32,26 +32,41 @@ st.set_page_config(
 if not os.path.exists(OUTPUT_FOLDER):
     os.makedirs(OUTPUT_FOLDER)
 
-# --- INITIALIZE SESSION STATES ---
-if "edited_template_content" not in st.session_state:
-    st.session_state.edited_template_content = (
-        "Subject: Global Introduction Update<br><br>"
-        "Dear {Name},<br><br>"
-        "Type your core promotional body structure layout text here..."
+# --- TRACK EXPLICIT SESSION STATE ---
+if "editor_markup" not in st.session_state:
+    st.session_state.editor_markup = (
+        "<p><strong>Subject: Global Introduction Update</strong></p>"
+        "<p>Dear {Name},</p>"
+        "<p>Type your core promotional body structure layout text here...</p>"
     )
+
+if "last_loaded_file" not in st.session_state:
+    st.session_state.last_loaded_file = "default"
 
 # --- BACKEND FUNCTIONS ---
 
 def get_gmail_service():
-    """Instantiates Google API Connection purely from memory Streamlit Dashboard Secrets."""
-    token_info = dict(st.secrets["google_token"])
-    creds = Credentials.from_authorized_user_info(token_info, SCOPES)
+    """Checks local environment files first for debugging, falls back to Cloud Secrets."""
+    local_token = os.path.join(SCRIPT_DIR, "token.json")
     
-    if not creds or not creds.valid:
+    if os.path.exists(local_token):
+        try:
+            creds = Credentials.from_authorized_user_file(local_token, SCOPES)
+            if creds and creds.valid:
+                return build('gmail', 'v1', credentials=creds)
+            if creds and creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+                return build('gmail', 'v1', credentials=creds)
+        except Exception:
+            pass
+
+    if "google_token" in st.secrets:
+        token_info = dict(st.secrets["google_token"])
+        creds = Credentials.from_authorized_user_info(token_info, SCOPES)
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
-            
-    return build('gmail', 'v1', credentials=creds)
+        return build('gmail', 'v1', credentials=creds)
+    return None
 
 def get_or_create_label(service, label_name):
     try:
@@ -60,18 +75,8 @@ def get_or_create_label(service, label_name):
         for label in labels:
             if label["name"].lower() == label_name.lower():
                 return label["id"]
-
-        label_object = {
-            "name": label_name,
-            "labelListVisibility": "labelShow",
-            "messageListVisibility": "show",
-        }
-        created_label = (
-            service.users()
-            .labels()
-            .create(userId="me", body=label_object)
-            .execute()
-        )
+        label_object = {"name": label_name, "labelListVisibility": "labelShow", "messageListVisibility": "show"}
+        created_label = service.users().labels().create(userId="me", body=label_object).execute()
         return created_label["id"]
     except Exception:
         return None
@@ -88,20 +93,12 @@ def run_compiler_pipeline(df, html_template):
             placeholder = f"{{{column_name}}}"
             value = str(row[column_name]).strip()
             if placeholder in personalized_content:
-                personalized_content = personalized_content.replace(
-                    placeholder, value
-                )
+                personalized_content = personalized_content.replace(placeholder, value)
 
         name_part = str(row.get("Name", f"Record_{index+1}")).strip()
         email_part = str(row.get("Email", "")).strip()
-        clean_name = "".join(
-            c for c in name_part if c.isalnum() or c in (" ", "_", "-")
-        ).rstrip()
-        filename = (
-            f"{clean_name}_{email_part}.html"
-            if email_part
-            else f"{clean_name}.html"
-        )
+        clean_name = "".join(c for c in name_part if c.isalnum() or c in (" ", "_", "-")).rstrip()
+        filename = f"{clean_name}_{email_part}.html" if email_part else f"{clean_name}.html"
         file_path = os.path.join(OUTPUT_FOLDER, filename)
 
         with open(file_path, "w", encoding="utf-8") as f:
@@ -113,124 +110,81 @@ def run_compiler_pipeline(df, html_template):
 # --- APPLICATION USER INTERFACE ---
 
 st.title("📧 Automated Mailer & Operations Pipeline")
-st.markdown(
-    "Upload your demographics matrix and template files to manage your operations step-by-step."
-)
+st.markdown("Upload your demographics matrix and template files to manage your operations step-by-step.")
 
 col1, col2 = st.columns([1, 1])
 
-# --- STEP 1: MULTI FILE UPLOADER ---
+# --- STEP 1: FILE INGESTION MAPPING ---
 with col1:
     st.subheader("📋 Step 1: Upload Files")
     uploaded_files = st.file_uploader(
         "Upload contacts.txt and template.txt here simultaneously",
         type=["txt", "csv"],
-        accept_multiple_files=True,
+        accept_multiple_files=True
     )
 
     df_contacts = None
-    template_file_content = None
-
     if uploaded_files:
         for file in uploaded_files:
             if "contacts" in file.name.lower():
                 try:
                     df_contacts = pd.read_csv(file)
-                    df_contacts.columns = (
-                        df_contacts.columns.astype(str).str.strip()
-                    )
+                    df_contacts.columns = df_contacts.columns.astype(str).str.strip()
                     st.success(f"✅ Loaded contacts: Found {len(df_contacts)} records.")
                 except Exception as e:
                     st.error(f"Error parsing contacts file: {e}")
             elif "template" in file.name.lower():
                 try:
-                    raw_bytes = file.read()
-                    template_file_content = raw_bytes.decode("utf-8")
-
-                    if not ("<p>" in template_file_content or "<br>" in template_file_content):
-                        template_file_content = template_file_content.replace("\n", "<br>")
-
-                    # FIXED: Overwrite the correct session state variable explicitly
-                    if st.session_state.edited_template_content != template_file_content:
-                        st.session_state.edited_template_content = template_file_content
-                        st.success("✅ Loaded template layout successfully.")
-                        st.rerun() # FORCE RERUN: Ensures TinyMCE iframe captures the new text immediately
+                    file_tracking_key = f"loaded_{file.name}_{file.size}"
+                    if st.session_state.last_loaded_file != file_tracking_key:
+                        raw_bytes = file.read()
+                        uploaded_content = raw_bytes.decode("utf-8")
+                        
+                        if not ("<p>" in uploaded_content or "<br>" in uploaded_content):
+                            lines = uploaded_content.split("\n")
+                            uploaded_content = "".join([f"<p>{line}</p>" if line.strip() else "<br>" for line in lines])
+                        
+                        st.session_state.editor_markup = uploaded_content
+                        st.session_state.last_loaded_file = file_tracking_key
+                        st.success("📝 Template imported successfully into compositor memory!")
+                        st.rerun()
                 except Exception as e:
                     st.error(f"Error reading template file: {e}")
 
-# --- STEP 2: WYSIWYG TINYMCE EMAIL DRAFTER (RESTORED WITH FULL OPTIONS) ---
+# --- STEP 2: NATIVE ADVANCED RICH TEXT COMPOSITOR ---
 with col2:
     st.subheader("📝 Step 2: Master Email Content Compositor")
-    st.markdown(
-        "<small>Modify layout styles, add hyperlinks, or bold elements. Placeholders like <code>{Name}</code> will be preserved.</small>",
-        unsafe_allow_html=True,
+    st.markdown("<small>Use the options below to format your email. Edits are tracked natively and safely.</small>", unsafe_allow_html=True)
+
+    editor_response = st_quill(
+        value=st.session_state.editor_markup,
+        html=True,
+        placeholder="Type your email body context here...",
+        key=f"quill_editor_{st.session_state.last_loaded_file}"
     )
 
-    # TinyMCE HTML Component String
-    tinymce_html = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <script src="https://cdn.jsdelivr.net/npm/tinymce@6/tinymce.min.js" referrerpolicy="origin"></script>
-    </head>
-    <body style="margin:0; padding:0;">
-        <textarea id="editor">{st.session_state.edited_template_content}</textarea>
-        <script>
-            tinymce.init({{
-                selector: '#editor',
-                height: 310,
-                plugins: 'link image lists table code wordcount',
-                toolbar: 'undo redo | blocks | bold italic underline forecolor backcolor | alignleft aligncenter alignright alignjustify | bullist numlist | link image | removeformat',
-                branding: false,
-                promotion: false,
-                setup: function (editor) {{
-                    editor.on('change keyup', function () {{
-                        window.parent.postMessage({{
-                            type: 'streamlit:setComponentValue',
-                            value: editor.getContent()
-                        }}, '*');
-                    }});
-                    editor.on('init', function() {{
-                        window.parent.postMessage({{
-                            type: 'streamlit:setComponentValue',
-                            value: editor.getContent()
-                        }}, '*');
-                    }});
-                }}
-            }});
-        </script>
-    </body>
-    </html>
-    """
+    if editor_response and editor_response != st.session_state.editor_markup:
+        st.session_state.editor_markup = editor_response
 
-    editor_response = components.html(tinymce_html, height=360, scrolling=False)
-
-    # Captures current changes typing into the editor box safely
-    if editor_response and isinstance(editor_response, str) and editor_response.strip() != "":
-        st.session_state.incoming_editor_changes = editor_response
-
-    # Save button row
+    # Save tracking block layout
     save_col1, save_col2 = st.columns([3, 1])
     with save_col2:
         if st.button("💾 Save Template Changes", type="primary", use_container_width=True):
-            if "incoming_editor_changes" in st.session_state:
-                st.session_state.edited_template_content = st.session_state.incoming_editor_changes
-            st.success("Changes saved successfully to mailbox pipeline memory!")
+            if editor_response:
+                st.session_state.editor_markup = editor_response
+            st.success("Changes committed to master layout!")
 
-# Only activate dashboard pipeline controls if contacts data is uploaded successfully
+# --- EXECUTION DASHBOARD CONTROLS ---
 if df_contacts is not None:
     st.markdown("---")
-
     btn_col1, btn_col2, btn_col3 = st.columns(3)
 
     with btn_col1:
         st.subheader("⚙️ Step 3: Drafts")
         generate_clicked = st.button("🚀 Generate Drafts", use_container_width=True)
-
     with btn_col2:
         st.subheader("🏷️ Step 4: Approval")
         approve_clicked = st.button("✅ Approve All Drafts", use_container_width=True)
-
     with btn_col3:
         st.subheader("📤 Step 5: Send")
         send_clicked = st.button("✉️ Send Mails", use_container_width=True)
@@ -242,22 +196,17 @@ if df_contacts is not None:
         with pipeline_status:
             status_box = st.status("Running Draft Generation Pipeline...", expanded=True)
             with status_box:
-                st.write("🔄 Compiling contact matrix dataset placeholders...")
+                st.write("🔄 Fetching stabilized native rich-text state from memory...")
                 
-                # Check if we have freshly unsaved tracking modifications before executing pipeline
-                if "incoming_editor_changes" in st.session_state:
-                    st.session_state.edited_template_content = st.session_state.incoming_editor_changes
-
-                master_template_string = str(st.session_state.edited_template_content)
-                
-                compiled_files = run_compiler_pipeline(df_contacts, master_template_string)
+                final_template = str(st.session_state.editor_markup)
+                compiled_files = run_compiler_pipeline(df_contacts, final_template)
                 st.write(f"✔️ Local letter generation complete. Formatted {len(compiled_files)} letters.")
 
                 st.write("🔄 Connecting to Google Mailbox API Services...")
                 service = get_gmail_service()
                 
                 if not service:
-                    st.error("❌ Google Workspace connection failed. Check your credentials token.")
+                    st.error("❌ Google Workspace connection failed.")
                 else:
                     label_id = get_or_create_label(service, TARGET_LABEL_NAME)
                     success_drafts = 0
@@ -268,7 +217,6 @@ if df_contacts is not None:
                         to_email = name_email_part.split("_")[-1] if "_" in name_email_part else ""
                         
                         if not to_email or "@" not in to_email:
-                            st.warning(f"⚠️ Skipped file '{filename}': Could not extract valid destination email target.")
                             continue
 
                         with open(file_path, "r", encoding="utf-8") as f:
@@ -277,12 +225,12 @@ if df_contacts is not None:
                         subject = "Exclusive Campaign Update"
                         html_body = body_content
 
+                        # Parse clean structural HTML parameters safely out of rich markup data streams
                         if "Subject:" in body_content:
                             try:
                                 parts = body_content.split("Subject:", 1)
                                 after_subject = parts[1]
                                 end_pos = len(after_subject)
-                                
                                 for marker in ["</p>", "<br>", "\n"]:
                                     if marker in after_subject:
                                         marker_pos = after_subject.find(marker)
@@ -290,13 +238,15 @@ if df_contacts is not None:
                                             end_pos = marker_pos
                                             
                                 subject = after_subject[:end_pos].replace("\r", "").replace("\n", "").strip()
+                                
                                 if ">" in subject:
                                     subject = subject.split(">")[-1].strip()
+                                for tag in ["<strong>", "</strong>", "<em>", "</em>", "</p>"]:
+                                    subject = subject.replace(tag, "")
                                     
                                 html_body = after_subject[end_pos:].strip()
                                 while html_body.startswith(("<br>", "<br />", "</p>", "\n")):
                                     html_body = html_body.replace("<br>","",1).replace("<br />","",1).replace("</p>","",1).strip()
-                                
                                 if parts[0].strip().endswith("<p>") and not html_body.startswith("<p>"):
                                     html_body = "<p>" + html_body
                             except Exception:
@@ -309,10 +259,18 @@ if df_contacts is not None:
                             message.set_content(html_body, subtype="html")
                             
                             encoded_bytes = base64.urlsafe_b64encode(message.as_bytes()).decode()
-                            draft_payload = {"message": {"raw": encoded_bytes}}
                             
+                            # Clean draft creation payload (no labels allowed here)
+                            draft_payload = {
+                                "message": {
+                                    "raw": encoded_bytes
+                                }
+                            }
+                            
+                            # 1. Create the clean draft
                             draft = service.users().drafts().create(userId="me", body=draft_payload).execute()
-
+                            
+                            # 2. Add the custom target label directly to the inner message ID safely
                             if label_id:
                                 service.users().messages().modify(
                                     userId="me",
@@ -326,7 +284,7 @@ if df_contacts is not None:
                             st.error(f"❌ API Rejected upload for {to_email}: {ex}")
 
                     status_box.update(label="🎉 Draft Generation Stage Complete!", state="complete")
-                    st.success(f"Successfully generated and injected {success_drafts} drafts into your Gmail inbox tagged under `{TARGET_LABEL_NAME}`!")
+                    st.success(f"Successfully injected {success_drafts} drafts into your Gmail inbox tagged under `{TARGET_LABEL_NAME}`!")
 
     # --- STEP 4 LOGIC: APPROVE DRAFTS ---
     if approve_clicked:
@@ -338,7 +296,6 @@ if df_contacts is not None:
                     needs_approval_id = get_or_create_label(service, TARGET_LABEL_NAME)
                     approved_id = get_or_create_label(service, APPROVED_LABEL_NAME)
 
-                    st.write("📥 Scanning unapproved drafts inventory...")
                     drafts_response = service.users().drafts().list(userId="me").execute()
                     current_drafts = drafts_response.get("drafts", [])
 
@@ -354,12 +311,10 @@ if df_contacts is not None:
                                     userId="me", id=msg_id, body={"addLabelIds": [approved_id]}
                                 ).execute()
                                 approved_count += 1
-                                st.write(f"🏷️ Appended approval tag to draft ID: {d['id']}")
                         except Exception:
                             pass
-
                     status_box.update(label="✔️ Approval Processing Loop Complete!", state="complete")
-                    st.success(f"Approval Complete! Added `{APPROVED_LABEL_NAME}` to {approved_count} drafts.")
+                    st.success(f"Approval Complete! Added `{APPROVED_LABEL_NAME}` label.")
 
     # --- STEP 5 LOGIC: SEND MAILS ---
     if send_clicked:
@@ -369,8 +324,6 @@ if df_contacts is not None:
                 service = get_gmail_service()
                 if service:
                     approved_id = get_or_create_label(service, APPROVED_LABEL_NAME)
-                    st.write("Scanning for approved items ready to deploy...")
-
                     drafts_response = service.users().drafts().list(userId="me").execute()
                     current_drafts = drafts_response.get("drafts", [])
 
@@ -385,11 +338,7 @@ if df_contacts is not None:
                                 dispatched_count += 1
                         except Exception:
                             pass
-
                     status_box.update(label="🚀 Campaign Dispatch Chain Complete!", state="complete")
-                    if dispatched_count > 0:
-                        st.success(f"🎉 Success! {dispatched_count} approved emails have been launched into production pipelines.")
-                    else:
-                        st.info(f"No remaining messages found containing the `{APPROVED_LABEL_NAME}` execution label to send.")
+                    st.success(f"🎉 Success! {dispatched_count} approved emails have been launched.")
 else:
     st.info("💡 Upload data files and provide body layouts above to unlock execution pipeline triggers.")
