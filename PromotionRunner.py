@@ -11,6 +11,18 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
+import streamlit as st
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+
+# 1. Read tokens directly from Streamlit Secrets dictionaries
+creds_info = dict(st.secrets["google_creds"])
+token_info = dict(st.secrets["google_token"])
+
+# 2. Build the credentials object directly from the dictionaries
+# (Instead of passing a string filename like 'token.json')
+credentials = Credentials.from_authorized_user_info(token_info)
+
 # --- API SCOPES & CONSTANTS ---
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.compose",
