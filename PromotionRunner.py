@@ -3,61 +3,38 @@ from email.message import EmailMessage
 import json
 import os
 import time
-from unittest.mock import patch, mock_open
-
-import pandas as pd
-import streamlit as st
-import streamlit.components.v1 as components
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
+import pandas as pd
+import streamlit as st
+import streamlit.components.v1 as components
 
+import streamlit as st
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+
+# 1. Read tokens directly from Streamlit Secrets dictionaries
+creds_info = dict(st.secrets["google_creds"])
+token_info = dict(st.secrets["google_token"])
+
+# 2. Build the credentials object directly from the dictionaries
+# (Instead of passing a string filename like 'token.json')
+# Uncomment the below line when running locally and credential and token is stored locally
+# credentials = Credentials.from_authorized_user_info(token_info) 
+
+
+# 1. Load user authorization tokens directly from Streamlit Dashboard Secrets
+token_info = dict(st.secrets["google_token"])
+credentials = Credentials.from_authorized_user_info(token_info)
+
+# 2. Extract application client configuration directly from Secrets 
+# This bypasses the need for a physical 'credentials.json' file entirely
+client_config = {"web": dict(st.secrets["google_creds"])}
 # =====================================================================
-# --- VIRTUAL FILE SYSTEM INJECTION FOR STREAMLIT SECRETS ---
-# =====================================================================
 
-# 1. Pull real dictionaries from Streamlit Cloud Secrets Dashboard
-VIRTUAL_CREDENTIALS_JSON = json.dumps({"web": dict(st.secrets["google_creds"])})
-VIRTUAL_TOKEN_JSON = json.dumps(dict(st.secrets["google_token"]))
 
-# 2. Store original system file checks before we modify them
-original_exists = os.path.exists
-original_isfile = os.path.isfile
-original_open = open
-
-def virtual_exists(path):
-    if os.path.basename(path) in ["credentials.json", "token.json"]:
-        return True
-    return original_exists(path)
-
-def virtual_isfile(path):
-    if os.path.basename(path) in ["credentials.json", "token.json"]:
-        return True
-    return original_isfile(path)
-
-def virtual_open(file, mode='r', *args, **kwargs):
-    filename = os.path.basename(file)
-    if filename == "credentials.json":
-        return mock_open(read_data=VIRTUAL_CREDENTIALS_JSON)().clone_for_read() if hasattr(mock_open(), 'clone_for_read') else mock_open(read_data=VIRTUAL_CREDENTIALS_JSON)()
-    elif filename == "token.json":
-        return mock_open(read_data=VIRTUAL_TOKEN_JSON)().clone_for_read() if hasattr(mock_open(), 'clone_for_read') else mock_open(read_data=VIRTUAL_TOKEN_JSON)()
-    return original_open(file, mode, *args, **kwargs)
-
-# 3. Inject our virtual environment hooks globally into the running application
-os.path.exists = virtual_exists
-os.path.isfile = virtual_isfile
-
-# We patch builtins.open so all downstream lines read our virtual secret data automatically
-builtins_open_patcher = patch("builtins.open", virtual_open)
-builtins_open_patcher.start()
-
-# 4. Standard Token setup using our virtual layout
-credentials = Credentials.from_authorized_user_info(dict(st.secrets["google_token"]))
-
-# =====================================================================
-# --- BACK TO YOUR ORIGINAL APP CODE ---
-# =====================================================================
 # --- API SCOPES & CONSTANTS ---
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.compose",
@@ -90,30 +67,54 @@ if "editor_content" not in st.session_state:
 
 # --- BACKEND FUNCTIONS ---
 
+# Uncomment this for local credentials and tokens
+# def get_gmail_service():
+#     creds = None
+#     token_path = os.path.join(SCRIPT_DIR, "token.json")
+#     credentials_path = os.path.join(SCRIPT_DIR, "credentials.json")
+
+#     if os.path.exists(token_path):
+#         creds = Credentials.from_authorized_user_file(token_path, SCOPES)
+
+#     if not creds or not creds.valid:
+#         if creds and creds.expired and creds.refresh_token:
+#             creds.refresh(Request())
+#         else:
+#             if not os.path.exists(credentials_path):
+#                 st.error(f"❌ `credentials.json` missing at {credentials_path}.")
+#                 return None
+#             flow = InstalledAppFlow.from_client_secrets_file(
+#                 credentials_path, SCOPES
+#             )
+#             creds = flow.run_local_server(port=0)
+#         with open(token_path, "w") as token:
+#             token.write(creds.to_json())
+#     return build("gmail", "v1", credentials=creds)
 
 def get_gmail_service():
-    creds = None
-    token_path = os.path.join(SCRIPT_DIR, "token.json")
-    credentials_path = os.path.join(SCRIPT_DIR, "credentials.json")
-
-    if os.path.exists(token_path):
-        creds = Credentials.from_authorized_user_file(token_path, SCOPES)
-
+    # ... any existing setup lines you have above line 97 ...
+    
+    # =====================================================================
+    # --- FIXED AUTHENTICATION REGION (STREAMLIT SECRETS ONLY) ---
+    # =====================================================================
+    
+    # 1. Read token info directly from your Streamlit Secrets Dashboard
+    token_info = dict(st.secrets["google_token"])
+    
+    # 2. Directly instantiate the credentials using the dictionary object
+    # This completely completely bypasses file path checks or token.json searches!
+    creds = Credentials.from_authorized_user_info(token_info, SCOPES)
+    
+    # 3. Handle token refresh if expired (purely in-memory)
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
-        else:
-            if not os.path.exists(credentials_path):
-                st.error(f"❌ `credentials.json` missing at {credentials_path}.")
-                return None
-            flow = InstalledAppFlow.from_client_secrets_file(
-                credentials_path, SCOPES
-            )
-            creds = flow.run_local_server(port=0)
-        with open(token_path, "w") as token:
-            token.write(creds.to_json())
-    return build("gmail", "v1", credentials=creds)
-
+            
+    # =====================================================================
+    
+    # Your remaining code below line 103 that builds the service...
+    service = build('gmail', 'v1', credentials=creds)
+    return service
 
 def get_or_create_label(service, label_name):
     try:
