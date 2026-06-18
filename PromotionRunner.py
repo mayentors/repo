@@ -11,7 +11,11 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
 # --- INITIAL SETTINGS ---
-st.set_page_config(page_title="Automated Marketing Mailer Engine", layout="wide")
+st.set_page_config(
+    page_title="Automated Marketing Mailer Engine",
+    page_icon="📧",
+    layout="wide"
+)
 
 # --- LOGIN GATEWAY ---
 if "authenticated" not in st.session_state:
@@ -28,7 +32,8 @@ if not st.session_state.authenticated:
             st.rerun()
         else:
             st.error("Invalid credentials.")
-    st.stop() # 🛑 CRITICAL: This kills code execution for unauthenticated public traffic
+    st.stop() # 🛑 CRITICAL: Kills execution for unauthenticated traffic
+
 # --- API SCOPES & CONSTANTS ---
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.compose",
@@ -41,12 +46,6 @@ APPROVED_LABEL_NAME = "Manually_Approved"
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_FOLDER = os.path.join(SCRIPT_DIR, "personalized_letters")
-
-st.set_page_config(
-    page_title="Automated Marketing Mailer Engine",
-    page_icon="📧",
-    layout="wide",
-)
 
 if not os.path.exists(OUTPUT_FOLDER):
     os.makedirs(OUTPUT_FOLDER)
@@ -67,7 +66,6 @@ if "last_loaded_file" not in st.session_state:
 def get_gmail_service():
     """Checks local environment files first for debugging, falls back to Cloud Secrets."""
     local_token = os.path.join(SCRIPT_DIR, "token.json")
-    
     if os.path.exists(local_token):
         try:
             creds = Credentials.from_authorized_user_file(local_token, SCOPES)
@@ -92,11 +90,9 @@ def get_or_create_label(service, label_name):
     try:
         results = service.users().labels().list(userId="me").execute()
         labels = results.get("labels", [])
-        
         for label in labels:
             if label["name"].strip().lower() == label_name.strip().lower():
                 return label["id"]
-        
         label_object = {
             "name": label_name, 
             "labelListVisibility": "labelShow", 
@@ -131,6 +127,18 @@ def run_compiler_pipeline(df, html_template):
             f.write(personalized_content)
         generated_files.append(file_path)
     return generated_files
+
+
+# --- SIDEBAR COMPLIANCE SETTINGS ---
+st.sidebar.header("⚙️ Anti-Spam Control Panel")
+max_per_hour = st.sidebar.number_input(
+    "Max requests per minute",
+    min_value=1,
+    max_value=60,
+    value=12,
+    help="Throttles execution spacing. E.g., 120/hr inserts exactly 1 item every 30 seconds."
+)
+calculated_delay = 60.0 / max_per_hour
 
 
 # --- APPLICATION USER INTERFACE ---
@@ -214,25 +222,15 @@ if df_contacts is not None:
     with btn_col3:
         st.subheader("📤 Step 5: Send")
         send_clicked = st.button(
-            "✉️ Send Mails",
-            use_container_width=True, 
-            disabled=True, 
-            help="Outbound campaign dispatch is disabled on public URLs for mailbox security."
+            "✉️ Send Mails", 
+            use_container_width=True 
+            # disabled=True, 
+            # help="Outbound campaign dispatch is disabled on public URLs for mailbox security."
         )
-
-
 
     pipeline_status = st.container()
 
-    # ... Keep Steps 3 and 4 logic exactly as they are ...
-
-    # --- STEP 5 LOGIC: SAFELY TRUNCATED ---
-    if send_clicked:
-        with pipeline_status:
-            # Hard backend barrier fallback
-            st.error("❌ Outbound transmission blocked. Code execution disabled on public nodes.")
-
-    # --- STEP 3 LOGIC: GENERATE DRAFTS ---
+    # --- STEP 3 LOGIC: GENERATE DRAFTS (WITH RATE-THROTTLING) ---
     if generate_clicked:
         with pipeline_status:
             status_box = st.status("Running Draft Generation Pipeline...", expanded=True)
@@ -251,8 +249,9 @@ if df_contacts is not None:
                 else:
                     label_id = get_or_create_label(service, TARGET_LABEL_NAME)
                     success_drafts = 0
+                    total_files = len(compiled_files)
 
-                    for file_path in compiled_files:
+                    for idx, file_path in enumerate(compiled_files):
                         filename = os.path.basename(file_path)
                         name_email_part = os.path.splitext(filename)[0]
                         to_email = name_email_part.split("_")[-1] if "_" in name_email_part else ""
@@ -266,7 +265,6 @@ if df_contacts is not None:
                         subject = "Exclusive Campaign Update"
                         html_body = body_content
 
-                        # Parse clean structural HTML parameters safely out of rich markup data streams
                         if "Subject:" in body_content:
                             try:
                                 parts = body_content.split("Subject:", 1)
@@ -279,7 +277,6 @@ if df_contacts is not None:
                                             end_pos = marker_pos
                                             
                                 subject = after_subject[:end_pos].replace("\r", "").replace("\n", "").strip()
-                                
                                 if ">" in subject:
                                     subject = subject.split(">")[-1].strip()
                                 for tag in ["<strong>", "</strong>", "<em>", "</em>", "</p>"]:
@@ -300,7 +297,6 @@ if df_contacts is not None:
                             message.set_content(html_body, subtype="html")
                             
                             encoded_bytes = base64.urlsafe_b64encode(message.as_bytes()).decode()
-                            
                             active_labels = ["DRAFT"]
                             if label_id:
                                 active_labels.append(label_id)
@@ -311,9 +307,14 @@ if df_contacts is not None:
                             }
                             
                             service.users().messages().insert(userId="me", body=message_payload).execute()
-                                
                             success_drafts += 1
-                            st.write(f"📡 Uploaded draft to your mailbox for: **{to_email}**")
+                            st.write(f"📡 ({success_drafts}/{total_files}) Uploaded draft for: **{to_email}**")
+                            
+                            # ⏳ Anti-Spam Rate-Limiter Throttling
+                            if idx < total_files - 1: # Skip sleeping on the very last email
+                                st.write(f"⏱️ Throttling anti-spam pacing... sleeping for {calculated_delay:.2f}s")
+                                time.sleep(calculated_delay)
+                                
                         except Exception as ex:
                             st.error(f"❌ API Rejected upload for {to_email}: {ex}")
 
@@ -347,43 +348,40 @@ if df_contacts is not None:
                     status_box.update(label="✔️ Approval Processing Loop Complete!", state="complete")
                     st.success(f"Approval Complete! Added `{APPROVED_LABEL_NAME}` label to {approved_count} matching drafts.")
 
-    # --- STEP 5 LOGIC: SEND MAILS ---
+    # --- STEP 5 LOGIC: BLOCK SEND MAILS ---
     if send_clicked:
         with pipeline_status:
-            status_box = st.status("Initializing Final Outbound Dispatch...")
-            with status_box:
-                service = get_gmail_service()
-                if service:
-                    approved_id = get_or_create_label(service, APPROVED_LABEL_NAME)
-                    
-                    # Look up messages that have been approved AND are still drafts
-                    messages_response = service.users().messages().list(userId="me", labelIds=[approved_id, "DRAFT"]).execute()
-                    current_messages = messages_response.get("messages", [])
+            st.error("❌ Outbound transmission blocked. Code execution disabled on public nodes.")
 
-                    dispatched_count = 0
-                    for m in current_messages:
-                        try:
-                            # 1. Fetch the raw message contents using the messages data stream
-                            msg_details = service.users().messages().get(userId="me", id=m["id"], format="raw").execute()
-                            raw_content = msg_details["raw"]
+    # # --- STEP 5 LOGIC: SEND MAILS ---
+    # if send_clicked:
+    #     with pipeline_status:
+    #         status_box = st.status("Initializing Final Outbound Dispatch...")
+    #         with status_box:
+    #             service = get_gmail_service()
+    #             if service:
+    #                 approved_id = get_or_create_label(service, APPROVED_LABEL_NAME)
+    #                 st.write("Scanning for approved items ready to deploy...")
 
-                            # 2. Transmit the email to the live production network
-                            send_payload = {"raw": raw_content}
-                            service.users().messages().send(userId="me", body=send_payload).execute()
-                            
-                            # 3. CRITICAL ACCESS FIX: Move the tracking draft to the TRASH folder.
-                            # This utilizes the existing 'gmail.modify' scope, avoiding 403 authorization crashes.
-                            service.users().messages().trash(userId="me", id=m["id"]).execute()
-                                
-                            dispatched_count += 1
-                            st.write(f"🚀 Launched email transmission chain for record ID: **{m['id']}**")
-                        except Exception as e:
-                            st.error(f"❌ Dispatch failed for message context {m['id']}: {e}")
-                            
-                    status_box.update(label="🚀 Campaign Dispatch Chain Complete!", state="complete")
-                    if dispatched_count > 0:
-                        st.success(f"🎉 Success! {dispatched_count} approved emails have been launched into production pipelines.")
-                    else:
-                        st.info("No remaining messages found containing the approval tags ready to send.")
+    #                 drafts_response = service.users().drafts().list(userId="me").execute()
+    #                 current_drafts = drafts_response.get("drafts", [])
+
+    #                 dispatched_count = 0
+    #                 for d in current_drafts:
+    #                     try:
+    #                         detail = service.users().drafts().get(userId="me", id=d["id"], format="full").execute()
+    #                         labels = detail.get("message", {}).get("labelIds", [])
+
+    #                         if approved_id in labels:
+    #                             service.users().drafts().send(userId="me", body={"id": d["id"]}).execute()
+    #                             dispatched_count += 1
+    #                     except Exception:
+    #                         pass
+
+    #                 status_box.update(label="🚀 Campaign Dispatch Chain Complete!", state="complete")
+    #                 if dispatched_count > 0:
+    #                     st.success(f"🎉 Success! {dispatched_count} approved emails have been launched into production pipelines.")
+    #                 else:
+    #                     st.info(f"No remaining messages found containing the `{APPROVED_LABEL_NAME}` execution label to send.")
 else:
     st.info("💡 Upload data files and provide body layouts above to unlock execution pipeline triggers.")
