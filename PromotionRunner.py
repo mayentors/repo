@@ -10,6 +10,25 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
+# --- INITIAL SETTINGS ---
+st.set_page_config(page_title="Automated Marketing Mailer Engine", layout="wide")
+
+# --- LOGIN GATEWAY ---
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
+
+if not st.session_state.authenticated:
+    st.subheader("🔒 Administrative Access Required")
+    input_user = st.text_input("Username")
+    input_pass = st.text_input("Password", type="password")
+    
+    if st.button("Login"):
+        if input_user == st.secrets["auth"]["username"] and input_pass == st.secrets["auth"]["password"]:
+            st.session_state.authenticated = True
+            st.rerun()
+        else:
+            st.error("Invalid credentials.")
+    st.stop() # 🛑 CRITICAL: This kills code execution for unauthenticated public traffic
 # --- API SCOPES & CONSTANTS ---
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.compose",
@@ -194,9 +213,24 @@ if df_contacts is not None:
         approve_clicked = st.button("✅ Approve All Drafts", use_container_width=True)
     with btn_col3:
         st.subheader("📤 Step 5: Send")
-        send_clicked = st.button("✉️ Send Mails", use_container_width=True)
+        send_clicked = st.button(
+            "✉️ Send Mails",
+            use_container_width=True, 
+            disabled=True, 
+            help="Outbound campaign dispatch is disabled on public URLs for mailbox security."
+        )
+
+
 
     pipeline_status = st.container()
+
+    # ... Keep Steps 3 and 4 logic exactly as they are ...
+
+    # --- STEP 5 LOGIC: SAFELY TRUNCATED ---
+    if send_clicked:
+        with pipeline_status:
+            # Hard backend barrier fallback
+            st.error("❌ Outbound transmission blocked. Code execution disabled on public nodes.")
 
     # --- STEP 3 LOGIC: GENERATE DRAFTS ---
     if generate_clicked:
